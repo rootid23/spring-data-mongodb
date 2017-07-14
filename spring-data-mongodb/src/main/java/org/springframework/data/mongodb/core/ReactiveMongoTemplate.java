@@ -24,8 +24,6 @@ import reactor.util.function.Tuple2;
 
 import java.util.*;
 import java.util.Map.Entry;
-import java.util.Optional;
-import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -636,6 +634,11 @@ public class ReactiveMongoTemplate implements ReactiveMongoOperations, Applicati
 	@Override
 	@SuppressWarnings("unchecked")
 	public <T> Flux<GeoResult<T>> geoNear(NearQuery near, Class<T> entityClass, String collectionName) {
+		return geoNear(near, entityClass, collectionName, entityClass);
+	}
+
+	protected <T> Flux<GeoResult<T>> geoNear(NearQuery near, Class<?> entityClass, String collectionName,
+			Class<T> returnType) {
 
 		if (near == null) {
 			throw new InvalidDataAccessApiUsageException("NearQuery must not be null!");
@@ -664,7 +667,7 @@ public class ReactiveMongoTemplate implements ReactiveMongoOperations, Applicati
 			}
 
 			GeoNearResultDbObjectCallback<T> callback = new GeoNearResultDbObjectCallback<T>(
-					new ReadDocumentCallback<T>(mongoConverter, entityClass, collectionName), near.getMetric());
+					new ReadDocumentCallback<T>(mongoConverter, returnType, collectionName), near.getMetric());
 
 			return executeCommand(command, this.readPreference).flatMapMany(document -> {
 
@@ -1504,6 +1507,42 @@ public class ReactiveMongoTemplate implements ReactiveMongoOperations, Applicati
 				new TailingQueryFindPublisherPreparer(query, entityClass));
 	}
 
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.mongodb.core.ReactiveExecutableFindOperation#query(java.lang.Class)
+	 */
+	@Override
+	public <T> ReactiveFindOperation<T> query(Class<T> domainType) {
+		return new ReactiveExecutableFindOperationSupport(this).query(domainType);
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.mongodb.core.ReactiveExecutableUpdateOperation#update(java.lang.Class)
+	 */
+	@Override
+	public <T> ReactiveUpdateOperation<T> update(Class<T> domainType) {
+		return new ReactiveExecutableUpdateOperationSupport(this).update(domainType);
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.mongodb.core.ReactiveExecutableRemoveOperation#remove(java.lang.Class)
+	 */
+	@Override
+	public <T> ReactiveRemoveOperation<T> remove(Class<T> domainType) {
+		return new ReactiveExecutableRemoveOperationSupport(this).remove(domainType);
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * @see org.springframework.data.mongodb.core.ReactiveExecutableInsertOperation#insert(java.lang.Class)
+	 */
+	@Override
+	public <T> ReactiveInsertOperation<T> insert(Class<T> domainType) {
+		return new ReactiveExecutableInsertOperationSupport(this).insert(domainType);
+	}
+
 	/**
 	 * Retrieve and remove all documents matching the given {@code query} by calling {@link #find(Query, Class, String)}
 	 * and {@link #remove(Query, Class, String)}, whereas the {@link Query} for {@link #remove(Query, Class, String)} is
@@ -1618,6 +1657,29 @@ public class ReactiveMongoTemplate implements ReactiveMongoOperations, Applicati
 
 		return executeFindMultiInternal(new FindCallback(mappedQuery, mappedFields), preparer, objectCallback,
 				collectionName);
+	}
+
+	/**
+	 * Map the results of an ad-hoc query on the default MongoDB collection to a List of the specified targetClass while
+	 * using sourceClass for mapping the query.
+	 *
+	 * @since 2.0
+	 */
+	<S, T> Flux<T> doFind(String collectionName, Document query, Document fields, Class<S> sourceClass,
+			Class<T> targetClass, FindPublisherPreparer preparer) {
+
+		MongoPersistentEntity<?> entity = mappingContext.getRequiredPersistentEntity(sourceClass);
+
+		Document mappedFields = queryMapper.getMappedFields(fields, entity);
+		Document mappedQuery = queryMapper.getMappedObject(query, entity);
+
+		if (LOGGER.isDebugEnabled()) {
+			LOGGER.debug("find using query: {} fields: {} for class: {} in collection: {}",
+					serializeToJsonSafely(mappedQuery), mappedFields, sourceClass, collectionName);
+		}
+
+		return executeFindMultiInternal(new FindCallback(mappedQuery, mappedFields), preparer,
+				new ReadDocumentCallback<T>(mongoConverter, targetClass, collectionName), collectionName);
 	}
 
 	protected CreateCollectionOptions convertToCreateCollectionOptions(CollectionOptions collectionOptions) {
@@ -2195,7 +2257,7 @@ public class ReactiveMongoTemplate implements ReactiveMongoOperations, Applicati
 	 *
 	 * @author Mark Paluch
 	 */
-	private class ReadDocumentCallback<T> implements DocumentCallback<T> {
+	class ReadDocumentCallback<T> implements DocumentCallback<T> {
 
 		private final EntityReader<? super T, Bson> reader;
 		private final Class<T> type;
